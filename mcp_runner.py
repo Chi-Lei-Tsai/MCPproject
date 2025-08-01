@@ -64,7 +64,7 @@ tool_schemas: List[Dict[str, Any]] = [
     },
     {
         "name": "query_sql",
-        "description": "Run a read‑only SELECT / WITH / EXPLAIN query "
+        "description": "Run a read‑only SELECT / WITH / EXPLAIN query"
                        "and return rows.",
         "parameters": {
             "type": "object",
@@ -166,14 +166,7 @@ You are a bilingual (中文 / English) financial-data assistant.
 Your mission:
 • Help users explore Taiwanese stock fundamentals and prices.
 • When a user mentions a company name or ticker (e.g., 台積電, TSMC, 鴻海),
-  FIRST call `resolve_stock_id` to get its 4-digit stock_id.
-• After you have the stock_id, decide whether you need one of these tools:
-    - `query_sql`        : read-only SQL (SELECT/WITH/EXPLAIN) on the financial data warehouse
-    - `list_tables`      : list available tables
-    - `describe_table`   : inspect columns in a table
-    - `add`              : add two numbers (demo calculator) 
-    - `resolve_stock_name` : translate a numeric stock_id to a common company name
-If you need stock data, use the `query_sql` tool to fetch it from the table "stock_quotes", 
+If you need stock data, fetch it from the table "stock_quotes", 
 for current price, please reference "AskPrice1",
 for starting price, please reference "RefPrice"
 
@@ -182,7 +175,7 @@ for starting price, please reference "RefPrice"
 • NEVER guess a stock_id—always call `resolve_stock_id`.
 • If a query would return more than 500 rows, aggregate or LIMIT 100.
 • If data is unavailable, say so and suggest an alternative metric.
-• ALWAYS call `describe_table` first to inspect the schema, then write SQL.
+• ALWAYS call `describe_table` before query_sql for a table.
 • Column names that contain capitals must be double-quoted, e.g. "AskPrice1", "MktDate" …”
 • When outputting stock id, always run `resolve_stock_name` to get a representative name, and append it after the stock_id, i.e. "2330 台積電".
 """
