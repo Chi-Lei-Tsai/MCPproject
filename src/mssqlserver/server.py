@@ -7,7 +7,8 @@ Env vars required (.env or shell):
     MSSQL_DSN  = "Driver={ODBC Driver 18 for SQL Server};Server=tcp:host,1433;\
                   Database=mydb;UID=user;PWD=pw;Encrypt=yes;TrustServerCertificate=yes"
 """
-
+import csv
+from pathlib import Path
 import asyncio, os
 from typing import Any, Dict, List
 
@@ -78,7 +79,93 @@ async def query_sql_mssql(sql: str, limit: int = 500) -> List[Dict[str, Any]] | 
         # --- bubble a JSON error payload back to the host ---------------
         return {"error": str(e), "sql": sql}
 
+_SCHEMA_CSV = Path(__file__).with_name("stTseStkPrcD_schema.csv")
 
+@mcp.tool()
+async def read_schema_csv(file: str | None = None) -> List[Dict[str, str]]:
+    """
+    Load the column-definition CSV and return it as a JSON array.
+
+    Parameters
+    ----------
+    file : str | None
+        Optional custom path.  If omitted, uses 'stScuSecuBasC_schema.csv'
+        located in the same directory as server.py.
+
+    Returns
+    -------
+    list[dict]
+        Each row is a dict with keys:
+        'Column_name', 'Explanation', 'Datatype', 'Availability'
+    """
+    path = Path(file) if file else _SCHEMA_CSV
+    if not path.exists():
+        raise FileNotFoundError(f"CSV not found → {path}")
+
+    with path.open(encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        return list(reader)
+
+# ---------------------------------------------------------------------------
+# 🔎  Resolve stock ID from common name / alias  -----------------------------
+# ---------------------------------------------------------------------------
+@mcp.tool()
+async def resolve_stock_id_mssql(keyword: str) -> Dict[str, Any]:
+    """
+    Find the internal `id` in `stScuSecuBasC` that matches a company name,
+    abbreviation or listCode.
+    
+    Strategy
+    --------
+    * Case-insensitive LIKE across all columns.
+    * Prefer **exact listCode** first (fast path).
+    * Otherwise return TOP 1 shortest alias, alphabetically first.
+
+    Returns
+    -------
+    {"id": 748, "matched_column": "nameAbbrV2", "matched_value": "台積電"}
+    or {} if no match.
+    """
+    pool = await get_pool()
+    kw = keyword.strip()
+
+    async with pool.acquire() as conn, conn.cursor() as cur:
+
+        # 1️⃣  Fast path: exact listCode match (e.g. '2330')
+        await cur.execute(
+            "SELECT id, 'listCode' AS matched_column, listCode AS matched_value "
+            "FROM stScuSecuBasC WHERE listCode = ?", (kw,)
+        )
+        if (row := await cur.fetchone()):
+            return dict(zip([c[0] for c in cur.description], row))
+
+        # 2️⃣  Search every alias column with LIKE '%kw%'
+        like_sql = """
+        SELECT TOP (1)
+               id,
+               colname   AS matched_column,
+               alias     AS matched_value
+        FROM (
+            SELECT id, 'name'        AS colname, name        AS alias FROM stScuSecuBasC
+            UNION ALL
+            SELECT id, 'name3',      name3      FROM stScuSecuBasC
+            UNION ALL
+            SELECT id, 'name4',      name4      FROM stScuSecuBasC
+            UNION ALL
+            SELECT id, 'nameV2',     nameV2     FROM stScuSecuBasC
+            UNION ALL
+            SELECT id, 'nameAbbrV2', nameAbbrV2 FROM stScuSecuBasC
+        ) AS u
+        WHERE alias LIKE ?
+        ORDER BY LEN(alias), alias
+        """
+        await cur.execute(like_sql, (f"%{kw}%",))
+        row = await cur.fetchone()
+        if row:
+            return dict(zip([c[0] for c in cur.description], row))
+
+        # nothing found
+        return {}
 
 # ── BOOT ──────────────────────────────────────────────────────────────
 async def run() -> None:

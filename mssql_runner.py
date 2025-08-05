@@ -7,7 +7,8 @@ Run: uv run python mcp_runner.py
 
 import asyncio, json, os, sys
 from typing import Any, Dict, List, cast
-
+from datetime import datetime, timezone, timedelta
+today_taipei = datetime.now(timezone(timedelta(hours=8))).date()
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 from openai.types.chat import ChatCompletionMessage, ChatCompletionMessageParam
@@ -35,6 +36,8 @@ MSSQL_SERVER = StdioServerParameters(
 
 TOOL_ROUTE: dict[str, StdioServerParameters] = {
     "query_sql_mssql":         MSSQL_SERVER,
+    "read_schema_csv":      MSSQL_SERVER,
+    "resolve_stock_id_mssql": MSSQL_SERVER,
 }
 
 # 🔍 A — sanity-check once at import time
@@ -56,7 +59,7 @@ async def run_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     return res.structuredContent  # type: ignore[attr-defined]
 
 
-# ── function schemas for Azure (3 tools) ────────────────────────────────────
+# ── function schemas for Azure (2 tools) ────────────────────────────────────
 tool_schemas: List[Dict[str, Any]] = [
     {
         "name": "query_sql_mssql",                     # <-- pick a unique name
@@ -74,7 +77,28 @@ tool_schemas: List[Dict[str, Any]] = [
             },
             "required": ["sql"]
         }
+    },
+    {
+    "name": "read_schema_csv",
+    "description": "Return the stTseStkPrcd schema as JSON rows.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+        "file": { "type": "string", "description": "Optional custom CSV path" }
+        }
     }
+    },
+    {
+    "name": "resolve_stock_id_mssql",
+    "description": "Translate a company name / abbreviation / listCode to its internal id using stScuSecuBasC.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "keyword": {"type": "string", "description": "e.g. '台積電' or '2330'"}
+        },
+        "required": ["keyword"]
+    }
+    },
 ]
 
 # ── interactive chat loop ───────────────────────────────────────────────────
@@ -119,9 +143,41 @@ async def chat() -> None:
             break
 
 SYSTEM_PROMPT = """
-You are a bilingual (中文 / English) financial-data assistant.
+You are a **bilingual (繁體中文 / English) financial-data assistant** connected to a Microsoft SQL Server data-warehouse.
+Current calendar date (Asia/Taipei): {today_taipei}
+## Your mission
 
-But we're currently only testing if you can connect to a microsoftSQL database.
+* Help users explore Taiwanese equities: prices, volumes, market-value, valuation ratios, etc.
+
+## Workflow you MUST follow
+
+1. **Identify the data**
+   *When a user references a company name / abbreviation / listCode, call **`resolve_stock_id_mssql`** with the raw text.
+   If no match is found, politely ask for clarification.
+
+2. **Query column definitions**
+   Use **`read_schema_csv`** to read the `stTseStkPrcD_schema.csv` file.
+   This file contains the column names and their meanings, of the `stTseStkPrcD` table, 
+   which contains daily stock prices and other market data.
+
+3. **Query market data**
+   Use **`query_sql_mssql`** to read `stTseStkPrcD`.
+   *Important SQL rules*
+
+   * read-only: **SELECT / WITH only** – never attempt INSERT/UPDATE/DELETE.
+   * Column names are case-sensitive; wrap identifiers that contain capitals in square-brackets, e.g. `[AskPrice1]`.
+   * If your query might return a very large result set, add `TOP(n)` or a proper `ORDER BY … OFFSET … FETCH NEXT` clause to keep rows ≤ 500.
+
+4. **Explain & format**
+
+   * For numerical answers include both the figure and its unit (e.g. “成交量 23 萬張”).
+   * When you present a stock, always prefix the 4-digit id and a representative alias, e.g. **“2330 台積電”**.
+   * Provide crisp, actionable explanations; show calculations when useful; switch freely between Chinese and English depending on the user’s language.
+
+## Safety & etiquette
+
+* Never guess an `id`; always rely on the resolver tool.
+* If data is missing or the query returns no rows, say so and suggest an alternative (e.g., previous closing price).
 """
 
 
