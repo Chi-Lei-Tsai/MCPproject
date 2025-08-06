@@ -1,7 +1,7 @@
 Column_name,Explanation,Datatype,Availability
 id,識別,int,N
 mtMarketC_id,市場別代碼檔id,int,N
-stScuSecuBasC_id,有價證券代碼檔id,int,Y
+stScuSecuBasC_id,internal stock id,int,Y
 ymdOn,日期,datetime,Y
 listCode,上市櫃碼,char(8),Y
 openPrice,開盤價(元),"numeric(7,2)",Y

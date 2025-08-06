@@ -89,7 +89,7 @@ async def read_schema_csv(file: str | None = None) -> List[Dict[str, str]]:
     Parameters
     ----------
     file : str | None
-        Optional custom path.  If omitted, uses 'stScuSecuBasC_schema.csv'
+        Optional custom path.  If omitted, uses 'stTseStkPrcD_schema.csv'
         located in the same directory as server.py.
 
     Returns
@@ -98,7 +98,7 @@ async def read_schema_csv(file: str | None = None) -> List[Dict[str, str]]:
         Each row is a dict with keys:
         'Column_name', 'Explanation', 'Datatype', 'Availability'
     """
-    path = Path(file) if file else _SCHEMA_CSV
+    path = _SCHEMA_CSV
     if not path.exists():
         raise FileNotFoundError(f"CSV not found → {path}")
 
@@ -112,60 +112,77 @@ async def read_schema_csv(file: str | None = None) -> List[Dict[str, str]]:
 @mcp.tool()
 async def resolve_stock_id_mssql(keyword: str) -> Dict[str, Any]:
     """
-    Find the internal `id` in `stScuSecuBasC` that matches a company name,
-    abbreviation or listCode.
-    
-    Strategy
-    --------
-    * Case-insensitive LIKE across all columns.
-    * Prefer **exact listCode** first (fast path).
-    * Otherwise return TOP 1 shortest alias, alphabetically first.
+    Resolve the internal `id` from stScuSecuBasC with this priority:
 
-    Returns
-    -------
-    {"id": 748, "matched_column": "nameAbbrV2", "matched_value": "台積電"}
-    or {} if no match.
+    1. Exact match on listCode             (e.g. '2330')
+    2. Exact match on any alias column     – but ignoring all spaces
+    3. Fallback: LIKE '%keyword%'          – also ignoring spaces
     """
     pool = await get_pool()
-    kw = keyword.strip()
+    kw_raw = keyword.strip()
+
+    # Strip ASCII space, full-width space (U+3000) and tabs
+    kw_ns = kw_raw.replace(" ", "").replace("\u3000", "").replace("\t", "")
 
     async with pool.acquire() as conn, conn.cursor() as cur:
 
-        # 1️⃣  Fast path: exact listCode match (e.g. '2330')
+        # 1️⃣ exact listCode --------------------------------------------------
         await cur.execute(
-            "SELECT id, 'listCode' AS matched_column, listCode AS matched_value "
-            "FROM stScuSecuBasC WHERE listCode = ?", (kw,)
+            """SELECT id, 'listCode' AS matched_column, listCode AS matched_value
+               FROM   stScuSecuBasC
+               WHERE  listCode = ?""",
+            (kw_raw,),
         )
         if (row := await cur.fetchone()):
             return dict(zip([c[0] for c in cur.description], row))
 
-        # 2️⃣  Search every alias column with LIKE '%kw%'
-        like_sql = """
-        SELECT TOP (1)
-               id,
-               colname   AS matched_column,
-               alias     AS matched_value
-        FROM (
-            SELECT id, 'name'        AS colname, name        AS alias FROM stScuSecuBasC
-            UNION ALL
-            SELECT id, 'name3',      name3      FROM stScuSecuBasC
-            UNION ALL
-            SELECT id, 'name4',      name4      FROM stScuSecuBasC
-            UNION ALL
-            SELECT id, 'nameV2',     nameV2     FROM stScuSecuBasC
-            UNION ALL
-            SELECT id, 'nameAbbrV2', nameAbbrV2 FROM stScuSecuBasC
-        ) AS u
-        WHERE alias LIKE ?
-        ORDER BY LEN(alias), alias
-        """
-        await cur.execute(like_sql, (f"%{kw}%",))
-        row = await cur.fetchone()
-        if row:
-            return dict(zip([c[0] for c in cur.description], row))
+        # Helper expression to strip spaces in SQL
+        def nosp(col: str) -> str:
+            return (
+                "REPLACE(REPLACE(REPLACE(" + col +
+                ", N' ', N''), NCHAR(12288), N''), CHAR(9), N'')"
+            )
 
-        # nothing found
-        return {}
+        # 2️⃣ exact alias (space-insensitive) ----------------------------------
+        exact_sql = f"""
+        DECLARE @kw NVARCHAR(100) = ?;
+
+        SELECT TOP (1) id, colname, alias
+        FROM (
+            SELECT id, 'name'        AS colname, name        AS alias, {nosp('name')}        AS alias_ns FROM stScuSecuBasC
+            UNION ALL
+            SELECT id, 'name3',      name3      AS alias, {nosp('name3')}      FROM stScuSecuBasC
+            UNION ALL
+            SELECT id, 'name4',      name4      AS alias, {nosp('name4')}      FROM stScuSecuBasC
+            UNION ALL
+            SELECT id, 'nameV2',     nameV2     AS alias, {nosp('nameV2')}     FROM stScuSecuBasC
+            UNION ALL
+            SELECT id, 'nameAbbrV2', nameAbbrV2 AS alias, {nosp('nameAbbrV2')} FROM stScuSecuBasC
+        ) AS u
+        WHERE alias_ns = @kw;
+        """
+        await cur.execute(exact_sql, (kw_ns,))
+        if (row := await cur.fetchone()):
+            return {
+                "id":             row[0],
+                "matched_column": row[1],
+                "matched_value":  row[2].strip(),
+            }
+
+        # 3️⃣ LIKE '%kw%' fallback (space-insensitive) ------------------------
+        like_sql = exact_sql.replace("= @kw", "LIKE '%' + @kw + '%'")
+        await cur.execute(like_sql, (kw_ns,))
+        if (row := await cur.fetchone()):
+            return {
+                "id":             row[0],
+                "matched_column": row[1],
+                "matched_value":  row[2].strip(),
+            }
+
+    # nothing found -----------------------------------------------------------
+    return {}
+
+
 
 # ── BOOT ──────────────────────────────────────────────────────────────
 async def run() -> None:
