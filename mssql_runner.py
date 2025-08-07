@@ -38,6 +38,8 @@ TOOL_ROUTE: dict[str, StdioServerParameters] = {
     "query_sql_mssql":         MSSQL_SERVER,
     "read_schema_csv":      MSSQL_SERVER,
     "resolve_stock_id_mssql": MSSQL_SERVER,
+    "resolve_stock_industry": MSSQL_SERVER,
+    "list_stocks_by_industry": MSSQL_SERVER,
 }
 
 # 🔍 A — sanity-check once at import time
@@ -66,8 +68,8 @@ tool_schemas: List[Dict[str, Any]] = [
         "description": (
             "Run a read-only T-SQL statement (SELECT / WITH) against the "
             "Microsoft SQL Server warehouse and return rows as JSON. "
-            "If the query omits TOP/OFFSET, the tool will automatically "
-            "append 'OFFSET 0 ROWS FETCH NEXT <limit>' to cap the result."
+            "Always use 'internal stock id' in queries, with the column name `stScuSecuBasC_id`"
+            "When querying with date, always type it out explicitly."
         ),
         "parameters": {
             "type": "object",
@@ -97,6 +99,31 @@ tool_schemas: List[Dict[str, Any]] = [
             "keyword": {"type": "string", "description": "e.g. '台積電' or '2330'"}
         },
         "required": ["keyword"]
+    }
+    },
+    {
+    "name": "resolve_stock_industry",
+    "description": "Translate an industry name / alias to its internal id via misc.dbo.mtIndustryC.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "keyword": {"type": "string", "description": "e.g. '半導體' or 'Electronics'"}
+        },
+        "required": ["keyword"]
+    }
+    },
+    {
+    "name": "list_stocks_by_industry",
+    "description": "Return all stocks (id, listCode, nameAbbrV2) that belong to a given industry_id using stock.dbo.stScuSecuBasC.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "industry_id": {
+                "type": "integer",
+                "description": "The numeric id from mtIndustryC.id"
+            }
+        },
+        "required": ["industry_id"]
     }
     },
 ]
@@ -142,10 +169,9 @@ async def chat() -> None:
             messages.append(cast(ChatCompletionMessageParam, msg))
             break
 
-SYSTEM_PROMPT = """
+SYSTEM_PROMPT = f"""
 You are a **bilingual (繁體中文 / English) financial-data assistant** connected to a Microsoft SQL Server data-warehouse.
 Current calendar date (Asia/Taipei): {today_taipei}
-
 Your mission:
 • Help users explore Taiwanese stock fundamentals and prices.
 
@@ -154,10 +180,8 @@ Your mission:
 • NEVER execute INSERT/UPDATE/DELETE.
 • If a query would return more than 500 rows, aggregate or LIMIT 100.
 • If data is unavailable, say so and suggest an alternative metric.
-• ALWAYS call `read_schema_csv` before 'query_sql_mssql' for a table.
-• Always use 'internal stock id' in queries, with the column name `stScuSecuBasC_id`.
+• ALWAYS call `read_schema_csv` before `query_sql_mssql` for a table.
 """
-
 
 
 # ── main ────────────────────────────────────────────────────────────────────

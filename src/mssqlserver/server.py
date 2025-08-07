@@ -182,7 +182,80 @@ async def resolve_stock_id_mssql(keyword: str) -> Dict[str, Any]:
     # nothing found -----------------------------------------------------------
     return {}
 
+# ---------------------------------------------------------------------------
+# 🔎  Resolve industry id from name / Eng / Abbr  ----------------------------
+# ---------------------------------------------------------------------------
+@mcp.tool()
+async def resolve_stock_industry(keyword: str) -> dict[str, Any]:
+    """
+    Translate an industry keyword to its internal `id` (misc.dbo.mtIndustryC).
 
+    Priority
+    --------
+    1. Exact match on any alias column (name / nameEng / nameAbbr)
+    2. Fallback: LIKE '%keyword%' ordered by shortest alias
+
+    Returns {"id": 42, "matched_column": "name", "matched_value": "水泥"} or {}
+    """
+    pool = await get_pool()                   # same DSN, same login
+    kw = keyword.strip()
+
+    async with pool.acquire() as conn, conn.cursor() as cur:
+
+        # 1️⃣  exact match ----------------------------------------------------
+        exact_sql = """
+        SELECT TOP (1) id, colname, alias
+        FROM (
+            SELECT id, 'name'      AS colname, name      AS alias FROM misc.dbo.mtIndustryC WHERE name      IS NOT NULL
+            UNION ALL
+            SELECT id, 'nameEng'   AS colname, nameEng   AS alias FROM misc.dbo.mtIndustryC WHERE nameEng   IS NOT NULL
+            UNION ALL
+            SELECT id, 'nameAbbr'  AS colname, nameAbbr  AS alias FROM misc.dbo.mtIndustryC WHERE nameAbbr  IS NOT NULL
+        ) AS u
+        WHERE alias = ?
+        """
+        await cur.execute(exact_sql, (kw,))
+        row = await cur.fetchone()
+        if row:
+            return {"id": row[0], "matched_column": row[1], "matched_value": row[2].strip()}
+
+        # 2️⃣  LIKE '%kw%' fallback ------------------------------------------
+        like_sql = exact_sql + """
+        ORDER BY LEN(alias), alias   -- shortest alias first
+        """
+        await cur.execute(like_sql.replace("alias = ?", "alias LIKE ?"), (f"%{kw}%",))
+        row = await cur.fetchone()
+        if row:
+            return {"id": row[0], "matched_column": row[1], "matched_value": row[2].strip()}
+
+    # nothing found
+    return {}
+
+# ---------------------------------------------------------------------------
+# 🗂️  List all stocks in an industry  ----------------------------------------
+# ---------------------------------------------------------------------------
+@mcp.tool()
+async def list_stocks_by_industry(industry_id: int) -> list[dict[str, Any]]:
+    """
+    Given an `industry_id` ( = mtIndustryC_id ),
+    return all matching stocks from **stock.dbo.stScuSecuBasC**.
+
+    Each row -> {"id": 748, "listCode": "2330", "nameAbbrV2": "台積電"}
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT id, listCode, nameAbbrV2
+            FROM   stock.dbo.stScuSecuBasC
+            WHERE  mtIndustryC_id = ?
+            ORDER  BY id
+            """,
+            (industry_id,),
+        )
+        cols = [c[0] for c in cur.description]      # ["id", "listCode", …]
+        rows = await cur.fetchall()
+        return [dict(zip(cols, r)) for r in rows]
 
 # ── BOOT ──────────────────────────────────────────────────────────────
 async def run() -> None:
