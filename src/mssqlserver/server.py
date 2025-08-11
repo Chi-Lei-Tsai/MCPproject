@@ -183,53 +183,113 @@ async def resolve_stock_id_mssql(keyword: str) -> Dict[str, Any]:
     return {}
 
 # ---------------------------------------------------------------------------
-# 🔎  Resolve industry id from name / Eng / Abbr  ----------------------------
+# 🔁  Resolve stock name from internal id  -----------------------------------
+# ---------------------------------------------------------------------------
+@mcp.tool()
+async def resolve_stock_name_mssql(stock_id: int | str) -> Dict[str, Any]:
+    """
+    Given an internal `id`, return the primary company name from
+    stock.dbo.stScuSecuBasC (`name` column). Also returns listCode.
+
+    Returns {"id": 2330, "name": "台積電", "listCode": "2330"} or {} if not found.
+    """
+    pool = await get_pool()
+    try:
+        sid = int(stock_id)
+    except (TypeError, ValueError):
+        raise ValueError("stock_id must be an integer (or numeric string)")
+
+    async with pool.acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT id, listCode, name
+            FROM   stScuSecuBasC
+            WHERE  id = ?
+            """,
+            (sid,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return {}
+
+        _id, list_code, name = row
+
+        # normalize whitespace: strip, collapse, convert full-width spaces
+        def normalize(s: str | None) -> str:
+            if s is None:
+                return ""
+            s = s.replace("\u3000", " ")  # full-width space → normal space
+            return " ".join(s.strip().split())
+
+        return {
+            "id": _id,
+            "name": normalize(name),
+            "listCode": normalize(list_code),
+        }
+
+# ---------------------------------------------------------------------------
+# 🔎  Resolve industry id from name / Eng / Abbr  (mtMarketC_id = 1 only)
 # ---------------------------------------------------------------------------
 @mcp.tool()
 async def resolve_stock_industry(keyword: str) -> dict[str, Any]:
     """
-    Translate an industry keyword to its internal `id` (misc.dbo.mtIndustryC).
+    Translate an industry keyword to its internal `id` (misc.dbo.mtIndustryC),
+    but only consider rows where mtMarketC_id = 1.
 
     Priority
     --------
-    1. Exact match on any alias column (name / nameEng / nameAbbr)
-    2. Fallback: LIKE '%keyword%' ordered by shortest alias
+    1) Exact match on any alias column (name / nameEng / nameAbbr)
+    2) Fallback: LIKE '%keyword%' ordered by shortest alias
 
     Returns {"id": 42, "matched_column": "name", "matched_value": "水泥"} or {}
     """
-    pool = await get_pool()                   # same DSN, same login
+    pool = await get_pool()
     kw = keyword.strip()
 
     async with pool.acquire() as conn, conn.cursor() as cur:
 
-        # 1️⃣  exact match ----------------------------------------------------
+        # 1️⃣ exact match (restricted to mtMarketC_id = 1)
         exact_sql = """
         SELECT TOP (1) id, colname, alias
         FROM (
-            SELECT id, 'name'      AS colname, name      AS alias FROM misc.dbo.mtIndustryC WHERE name      IS NOT NULL
+            SELECT id, 'name'     AS colname, name     AS alias
+            FROM   misc.dbo.mtIndustryC
+            WHERE  mtMarketC_id = 1 AND name     IS NOT NULL
             UNION ALL
-            SELECT id, 'nameEng'   AS colname, nameEng   AS alias FROM misc.dbo.mtIndustryC WHERE nameEng   IS NOT NULL
+            SELECT id, 'nameEng'  AS colname, nameEng  AS alias
+            FROM   misc.dbo.mtIndustryC
+            WHERE  mtMarketC_id = 1 AND nameEng  IS NOT NULL
             UNION ALL
-            SELECT id, 'nameAbbr'  AS colname, nameAbbr  AS alias FROM misc.dbo.mtIndustryC WHERE nameAbbr  IS NOT NULL
+            SELECT id, 'nameAbbr' AS colname, nameAbbr AS alias
+            FROM   misc.dbo.mtIndustryC
+            WHERE  mtMarketC_id = 1 AND nameAbbr IS NOT NULL
         ) AS u
         WHERE alias = ?
         """
         await cur.execute(exact_sql, (kw,))
         row = await cur.fetchone()
         if row:
-            return {"id": row[0], "matched_column": row[1], "matched_value": row[2].strip()}
+            return {
+                "id": row[0],
+                "matched_column": row[1],
+                "matched_value": (row[2] or "").strip(),
+            }
 
-        # 2️⃣  LIKE '%kw%' fallback ------------------------------------------
-        like_sql = exact_sql + """
-        ORDER BY LEN(alias), alias   -- shortest alias first
+        # 2️⃣ LIKE '%kw%' fallback (still restricted to mtMarketC_id = 1)
+        like_sql = exact_sql.replace("alias = ?", "alias LIKE ?") + """
+        ORDER BY LEN(alias), alias
         """
-        await cur.execute(like_sql.replace("alias = ?", "alias LIKE ?"), (f"%{kw}%",))
+        await cur.execute(like_sql, (f"%{kw}%",))
         row = await cur.fetchone()
         if row:
-            return {"id": row[0], "matched_column": row[1], "matched_value": row[2].strip()}
+            return {
+                "id": row[0],
+                "matched_column": row[1],
+                "matched_value": (row[2] or "").strip(),
+            }
 
-    # nothing found
     return {}
+
 
 # ---------------------------------------------------------------------------
 # 🗂️  List all stocks in an industry  ----------------------------------------

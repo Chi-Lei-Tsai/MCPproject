@@ -1,10 +1,3 @@
-"""
-mcp_runner.py – routes Azure OpenAI function calls to two MCP servers:
-  • pgserver   – Postgres read‑only SQL tools
-  • wxserver   – demo calculator with an `add` tool
-Run: uv run python mcp_runner.py
-"""
-
 import asyncio, json, os, sys
 from typing import Any, Dict, List, cast
 from datetime import datetime, timezone, timedelta
@@ -40,6 +33,7 @@ TOOL_ROUTE: dict[str, StdioServerParameters] = {
     "resolve_stock_id_mssql": MSSQL_SERVER,
     "resolve_stock_industry": MSSQL_SERVER,
     "list_stocks_by_industry": MSSQL_SERVER,
+    "resolve_stock_name_mssql": MSSQL_SERVER,
 }
 
 # 🔍 A — sanity-check once at import time
@@ -48,17 +42,36 @@ assert TOOL_ROUTE["query_sql_mssql"] is MSSQL_SERVER, "Router mis-mapped!"
 # ── helper to call any MCP tool ─────────────────────────────────────────────
 async def run_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     srv = TOOL_ROUTE[name]
-    # print sql (if present) before the round-trip
-    print("DEBUG env.MSSQL_DSN →", os.getenv("MSSQL_DSN")[:120], file=sys.stderr)
+
+    # Show DSN for sanity
+    print("DEBUG env.MSSQL_DSN →", os.getenv("MSSQL_DSN"), file=sys.stderr)
+
     async with stdio_client(srv) as (r, w):
         async with ClientSession(r, w) as sess:
             await sess.initialize()
             res = await sess.call_tool(name, args)
 
-    # 🔍 B — log the raw structured content
-    print("DEBUG result →", json.dumps(res.structuredContent)[:500], file=sys.stderr)
+    # Try to surface the exact SQL that was executed if the server included it
+    sc = res.structuredContent  # type: ignore[attr-defined]
+    executed_sql = None
+    if isinstance(sc, dict):
+        executed_sql = sc.get("sql")
+        if not executed_sql and isinstance(sc.get("result"), dict):
+            executed_sql = sc["result"].get("sql")
 
-    return res.structuredContent  # type: ignore[attr-defined]
+    if executed_sql:
+        print("DEBUG Executed SQL (from server) →\n" + executed_sql, file=sys.stderr)
+
+    # replace the preview block with this:
+    try:
+        pretty = json.dumps(sc, ensure_ascii=False, indent=2)
+    except Exception:
+        pretty = str(sc)
+
+    print("DEBUG result →\n" + pretty, file=sys.stderr)
+
+    return sc
+
 
 
 # ── function schemas for Azure (2 tools) ────────────────────────────────────
@@ -99,6 +112,20 @@ tool_schemas: List[Dict[str, Any]] = [
             "keyword": {"type": "string", "description": "e.g. '台積電' or '2330'"}
         },
         "required": ["keyword"]
+    }
+    },
+    {
+    "name": "resolve_stock_name_mssql",
+    "description": "Return the primary company name ('name') for a given internal stock id from stScuSecuBasC.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "stock_id": {
+                "type": ["integer", "string"],
+                "description": "Internal id from stScuSecuBasC (e.g., 2330)"
+            }
+        },
+        "required": ["stock_id"]
     }
     },
     {
@@ -153,7 +180,12 @@ async def chat() -> None:
             if call:
                 name = call.name
                 args = json.loads(call.arguments)
-                print(f"🔧 calling {name}{args}", file=sys.stderr)   # 🔍 C
+                print(f"🔧 calling {name}{args}", file=sys.stderr)
+
+                # NEW: print full SQL we’re about to send (if this is the MSSQL tool)
+                if name == "query_sql_mssql":
+                    sql_txt = args.get("sql", "")
+                    print("DEBUG SQL to server →\n" + sql_txt, file=sys.stderr)
 
                 result = await run_tool(name, args)
 
@@ -181,6 +213,7 @@ Your mission:
 • If a query would return more than 500 rows, aggregate or LIMIT 100.
 • If data is unavailable, say so and suggest an alternative metric.
 • ALWAYS call `read_schema_csv` before `query_sql_mssql` for a table.
+• If a user asks for data from a month or year, always query the full month/year, not just the current date or last day.
 """
 
 
