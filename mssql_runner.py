@@ -77,21 +77,29 @@ async def run_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
 # ── function schemas for Azure (2 tools) ────────────────────────────────────
 tool_schemas: List[Dict[str, Any]] = [
     {
-        "name": "query_sql_mssql",                     # <-- pick a unique name
-        "description": (
-            "Run a read-only T-SQL statement (SELECT / WITH) against the "
-            "Microsoft SQL Server warehouse and return rows as JSON. "
-            "Always use 'internal stock id' in queries, with the column name `stScuSecuBasC_id`"
-            "When querying with date, always type it out explicitly."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "sql":   {"type": "string"},
-                "limit": {"type": "integer", "default": 500},
-            },
-            "required": ["sql"]
+    "name": "query_sql_mssql",
+    "description": "Run a **read-only** T-SQL query and return rows as JSON."
+    "**STRICT RULES (MSSQL dialect only):**\n• **Allowed statements:** SELECT / WITH only. (No INSERT/UPDATE/DELETE/MERGE/ALTER/DROP/EXEC/sp_*)"
+    "• **No `LIMIT`.** Use **`TOP (N)`** or **`ORDER BY ... OFFSET 0 ROWS FETCH NEXT N ROWS ONLY`**."
+    "• If you use `FETCH NEXT`, you **must** include an `ORDER BY` clause.• **Fully qualify tables** with schema: e.g. `dbo.stTseStkPrcD`, `dbo.stScuSecuBasC`, `misc.dbo.mtIndustryC`."
+    "• **Date/time literals** use single quotes, ISO format: `'YYYY-MM-DD'`.• Quote identifiers (if needed) with **[square brackets]** or **double quotes**, **never** backticks."
+    "• Use **'stScuSecuBasC_id'** for filtering by internal stock id."
+    "• Keep result sets small: include `TOP (N)` or `OFFSET/FETCH` (the tool will auto-limit if missing).",
+    "parameters": {
+        "type": "object",
+        "properties": {
+        "sql": {
+            "type": "string",
+            "description": "A single **T-SQL** SELECT/WITH statement that obeys the rules above."
+        },
+        "limit": {
+            "type": "integer",
+            "default": 500,
+            "description": "Soft cap. If your query has no TOP/FETCH, the tool will auto-limit to this."
         }
+        },
+        "required": ["sql"]
+    }
     },
     {
     "name": "read_schema_csv",
@@ -130,11 +138,11 @@ tool_schemas: List[Dict[str, Any]] = [
     },
     {
     "name": "resolve_stock_industry",
-    "description": "Translate an industry name / alias to its internal id via misc.dbo.mtIndustryC.",
+    "description": "Resolve an industry keyword to internal industry ids from misc.dbo.mtIndustryC for two markets. After calling this tool, ALWAYS inspect both keys: for each non-null `id`, call `list_stocks_by_industry` (once per id), merge the resulting stock ids, and use the COMBINED set in subsequent SQL filters. If only one market is present, just use that one.",
     "parameters": {
         "type": "object",
         "properties": {
-            "keyword": {"type": "string", "description": "e.g. '半導體' or 'Electronics'"}
+        "keyword": { "type": "string", "description": "Industry keyword, e.g. '半導體' or '水泥'." }
         },
         "required": ["keyword"]
     }

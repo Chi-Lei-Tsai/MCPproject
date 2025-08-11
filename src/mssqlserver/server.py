@@ -39,30 +39,36 @@ async def get_pool() -> aioodbc.pool.Pool:
 async def query_sql_mssql(sql: str, limit: int = 500) -> List[Dict[str, Any]] | Dict[str, str]:
     """
     Run a **read-only** T-SQL statement (SELECT / WITH).
-    If the caller forgets to limit rows, append
-        OFFSET 0 ROWS FETCH NEXT <limit> ROWS ONLY
-    so we never return an unbounded result.
-    On ANY exception, write the SQL + traceback to stderr and
-    return {"error": "...", "sql": "<the-sql>"} instead of null.
+    Auto-limit: if the query has neither TOP nor FETCH, add TOP(limit).
+    If it has ORDER BY but no TOP/FETCH, append OFFSET/FETCH.
+    Never mix TOP and OFFSET/FETCH in the same query.
     """
-    import sys, traceback
+    import sys, traceback, re
 
     low = sql.strip().lower()
     if not low.startswith(("select", "with")):
         raise ValueError("Only SELECT / WITH statements are allowed")
 
-    # auto-limit rows if caller didn't
-    import re
-    if (" top " not in low
-            and " fetch next " not in low
-            and " order by " not in low):
-        # add TOP when there's no existing limit and no ORDER BY
-        sql = re.sub(r"^\s*select\b", f"SELECT TOP ({limit})", sql, count=1, flags=re.I)
-    elif " fetch next " not in low and " order by " in low:
-        # has ORDER BY but no FETCH ⇒ append fetch
-        sql += f" OFFSET 0 ROWS FETCH NEXT {limit} ROWS ONLY"
+    # Detect presence of limiting clauses
+    has_top   = bool(re.search(r"\bselect\s+top\s*\(", low, flags=re.I))
+    has_fetch = " fetch next " in low
+    has_order = " order by " in low
+
+    # Auto-limit rules:
+    # - If TOP present: leave as-is (do NOT append FETCH).
+    # - Else if FETCH present: leave as-is.
+    # - Else if ORDER BY present: append OFFSET/FETCH.
+    # - Else: inject TOP (limit).
+    if not has_top and not has_fetch:
+        if has_order:
+            sql = f"{sql} OFFSET 0 ROWS FETCH NEXT {limit} ROWS ONLY"
+        else:
+            sql = re.sub(r"(?i)^\s*select\s+", f"SELECT TOP ({limit}) ", sql, count=1)
 
     try:
+        # Optional: log exactly what we execute
+        print("\nDEBUG Executed SQL (server) →\n" + sql, file=sys.stderr)
+
         pool = await get_pool()
         async with pool.acquire() as conn, conn.cursor() as cur:
             await cur.execute(sql)
@@ -71,13 +77,11 @@ async def query_sql_mssql(sql: str, limit: int = 500) -> List[Dict[str, Any]] | 
             return [dict(zip(cols, r)) for r in rows]
 
     except Exception as e:
-        # --- dump details to server stderr (shows in Claude / runner log) ---
         print("\n=== SQL ERROR in query_sql_mssql ===", file=sys.stderr)
         print(sql, file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
-
-        # --- bubble a JSON error payload back to the host ---------------
         return {"error": str(e), "sql": sql}
+
 
 _SCHEMA_CSV = Path(__file__).with_name("stTseStkPrcD_schema.csv")
 
@@ -228,67 +232,69 @@ async def resolve_stock_name_mssql(stock_id: int | str) -> Dict[str, Any]:
         }
 
 # ---------------------------------------------------------------------------
-# 🔎  Resolve industry id from name / Eng / Abbr  (mtMarketC_id = 1 only)
+# 🔎  Resolve industry id from name / Eng / Abbr  (returns market 1 and 2)
 # ---------------------------------------------------------------------------
 @mcp.tool()
 async def resolve_stock_industry(keyword: str) -> dict[str, Any]:
     """
-    Translate an industry keyword to its internal `id` (misc.dbo.mtIndustryC),
-    but only consider rows where mtMarketC_id = 1.
+    Translate an industry keyword to its internal `id` from misc.dbo.mtIndustryC,
+    checking BOTH mtMarketC_id = 1 and = 2. For each market, try:
+      1) exact match on any alias column (name / nameEng / nameAbbr)
+      2) fallback: LIKE '%keyword%' ordered by shortest alias, then alphabetic
 
-    Priority
-    --------
-    1) Exact match on any alias column (name / nameEng / nameAbbr)
-    2) Fallback: LIKE '%keyword%' ordered by shortest alias
-
-    Returns {"id": 42, "matched_column": "name", "matched_value": "水泥"} or {}
+    Returns:
+      {
+        "market_1": {"id": ..., "matched_column": "...", "matched_value": "..."} | None,
+        "market_2": {"id": ..., "matched_column": "...", "matched_value": "..."} | None
+      }
     """
     pool = await get_pool()
     kw = keyword.strip()
 
-    async with pool.acquire() as conn, conn.cursor() as cur:
-
-        # 1️⃣ exact match (restricted to mtMarketC_id = 1)
-        exact_sql = """
-        SELECT TOP (1) id, colname, alias
-        FROM (
+    async def _resolve_for_market(cur, market_id: int) -> dict[str, Any] | None:
+        base = """
+        WITH U AS (
             SELECT id, 'name'     AS colname, name     AS alias
             FROM   misc.dbo.mtIndustryC
-            WHERE  mtMarketC_id = 1 AND name     IS NOT NULL
+            WHERE  mtMarketC_id = ? AND name     IS NOT NULL
             UNION ALL
             SELECT id, 'nameEng'  AS colname, nameEng  AS alias
             FROM   misc.dbo.mtIndustryC
-            WHERE  mtMarketC_id = 1 AND nameEng  IS NOT NULL
+            WHERE  mtMarketC_id = ? AND nameEng  IS NOT NULL
             UNION ALL
             SELECT id, 'nameAbbr' AS colname, nameAbbr AS alias
             FROM   misc.dbo.mtIndustryC
-            WHERE  mtMarketC_id = 1 AND nameAbbr IS NOT NULL
-        ) AS u
-        WHERE alias = ?
+            WHERE  mtMarketC_id = ? AND nameAbbr IS NOT NULL
+        )
         """
-        await cur.execute(exact_sql, (kw,))
+
+        # 1) exact
+        exact_sql = base + " SELECT TOP (1) id, colname, alias FROM U WHERE alias = ?;"
+        await cur.execute(exact_sql, (market_id, market_id, market_id, kw))
         row = await cur.fetchone()
         if row:
-            return {
-                "id": row[0],
-                "matched_column": row[1],
-                "matched_value": (row[2] or "").strip(),
-            }
+            return {"id": row[0], "matched_column": row[1], "matched_value": (row[2] or "").strip()}
 
-        # 2️⃣ LIKE '%kw%' fallback (still restricted to mtMarketC_id = 1)
-        like_sql = exact_sql.replace("alias = ?", "alias LIKE ?") + """
-        ORDER BY LEN(alias), alias
+        # 2) LIKE fallback
+        like_sql = base + """
+            SELECT TOP (1) id, colname, alias
+            FROM U
+            WHERE alias LIKE ?
+            ORDER BY LEN(alias), alias;
         """
-        await cur.execute(like_sql, (f"%{kw}%",))
+        await cur.execute(like_sql, (market_id, market_id, market_id, f"%{kw}%"))
         row = await cur.fetchone()
         if row:
-            return {
-                "id": row[0],
-                "matched_column": row[1],
-                "matched_value": (row[2] or "").strip(),
-            }
+            return {"id": row[0], "matched_column": row[1], "matched_value": (row[2] or "").strip()}
 
-    return {}
+        return None
+
+    async with pool.acquire() as conn, conn.cursor() as cur:
+        res1 = await _resolve_for_market(cur, 1)
+        res2 = await _resolve_for_market(cur, 2)
+
+    return {"market_1": res1, "market_2": res2}
+
 
 
 # ---------------------------------------------------------------------------
