@@ -80,10 +80,8 @@ tool_schemas: List[Dict[str, Any]] = [
     "name": "query_sql_mssql",
     "description": "Run a **read-only** T-SQL query and return rows as JSON."
     "**STRICT RULES (MSSQL dialect only):**\n• **Allowed statements:** SELECT / WITH only. (No INSERT/UPDATE/DELETE/MERGE/ALTER/DROP/EXEC/sp_*)"
-    "• **No `LIMIT`.** Use **`TOP (N)`** or **`ORDER BY ... OFFSET 0 ROWS FETCH NEXT N ROWS ONLY`**."
-    "• If you use `FETCH NEXT`, you **must** include an `ORDER BY` clause.• **Fully qualify tables** with schema: e.g. `dbo.stTseStkPrcD`, `dbo.stScuSecuBasC`, `misc.dbo.mtIndustryC`."
-    "• Use **'stScuSecuBasC_id'** for filtering by internal stock id."
-    "• Keep result sets small: include `TOP (N)` or `OFFSET/FETCH` (the tool will auto-limit if missing).",
+    "• ALWAYS call `read_schema_csv` before `query_sql_mssql`"
+    "• **No `LIMIT`.** Use **`TOP (N)`** or **`ORDER BY ... OFFSET 0 ROWS FETCH NEXT N ROWS ONLY`**.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -102,7 +100,9 @@ tool_schemas: List[Dict[str, Any]] = [
     },
     {
     "name": "read_schema_csv",
-    "description": "Return the stTseStkPrcD schema as JSON rows. DO NOT input file paths, use the default.",
+    "description": "Return the stTseStkPrcD schema as JSON rows. DO NOT input file paths, use the default."
+                "If you see 千元, it means the value is in thousands (e.g., 1234 means 1,234,000)."
+                "If you see 百萬, it means the value is in millions (e.g., 1234 means 1,234,000,000).",
     "parameters": {
         "type": "object",
         "properties": {
