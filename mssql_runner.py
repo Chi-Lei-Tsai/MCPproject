@@ -82,7 +82,6 @@ tool_schemas: List[Dict[str, Any]] = [
     "**STRICT RULES (MSSQL dialect only):**\n• **Allowed statements:** SELECT / WITH only. (No INSERT/UPDATE/DELETE/MERGE/ALTER/DROP/EXEC/sp_*)"
     "• **No `LIMIT`.** Use **`TOP (N)`** or **`ORDER BY ... OFFSET 0 ROWS FETCH NEXT N ROWS ONLY`**."
     "• If you use `FETCH NEXT`, you **must** include an `ORDER BY` clause.• **Fully qualify tables** with schema: e.g. `dbo.stTseStkPrcD`, `dbo.stScuSecuBasC`, `misc.dbo.mtIndustryC`."
-    "• **Date/time literals** use single quotes, ISO format: `'YYYY-MM-DD'`.• Quote identifiers (if needed) with **[square brackets]** or **double quotes**, **never** backticks."
     "• Use **'stScuSecuBasC_id'** for filtering by internal stock id."
     "• Keep result sets small: include `TOP (N)` or `OFFSET/FETCH` (the tool will auto-limit if missing).",
     "parameters": {
