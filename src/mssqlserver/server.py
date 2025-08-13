@@ -298,30 +298,27 @@ async def resolve_stock_industry(keyword: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 🗂️  List all stocks in an industry  ----------------------------------------
+# 🗂️  List all stocks in an industry  — IDs only -----------------------------
 # ---------------------------------------------------------------------------
 @mcp.tool()
-async def list_stocks_by_industry(industry_id: int) -> list[dict[str, Any]]:
+async def list_stocks_by_industry(industry_id: int) -> list[int]:
     """
-    Given an `industry_id` ( = mtIndustryC_id ),
-    return all matching stocks from **stock.dbo.stScuSecuBasC**.
-
-    Each row -> {"id": 748, "listCode": "2330", "nameAbbrV2": "台積電"}
+    Given an `industry_id` (= mtIndustryC_id), return a list of internal stock IDs.
     """
     pool = await get_pool()
     async with pool.acquire() as conn, conn.cursor() as cur:
         await cur.execute(
             """
-            SELECT id, listCode, nameAbbrV2
+            SELECT id
             FROM   stock.dbo.stScuSecuBasC
             WHERE  mtIndustryC_id = ?
             ORDER  BY id
             """,
             (industry_id,),
         )
-        cols = [c[0] for c in cur.description]      # ["id", "listCode", …]
         rows = await cur.fetchall()
-        return [dict(zip(cols, r)) for r in rows]
+        return [int(r[0]) for r in rows]
+
 
 # ── BOOT ──────────────────────────────────────────────────────────────
 async def run() -> None:

@@ -81,6 +81,7 @@ tool_schemas: List[Dict[str, Any]] = [
     "description": "Run a **read-only** T-SQL query and return rows as JSON."
     "**STRICT RULES (MSSQL dialect only):**\n• **Allowed statements:** SELECT / WITH only. (No INSERT/UPDATE/DELETE/MERGE/ALTER/DROP/EXEC/sp_*)"
     "• ALWAYS call `read_schema_csv` before `query_sql_mssql`"
+    "• ALWAYS call `read_schema_csv` before `query_sql_mssql`"
     "• **No `LIMIT`.** Use **`TOP (N)`** or **`ORDER BY ... OFFSET 0 ROWS FETCH NEXT N ROWS ONLY`**.",
     "parameters": {
         "type": "object",
@@ -101,8 +102,7 @@ tool_schemas: List[Dict[str, Any]] = [
     {
     "name": "read_schema_csv",
     "description": "Return the stTseStkPrcD schema as JSON rows. DO NOT input file paths, use the default."
-                "If you see 千元, it means the value is in thousands (e.g., 1234 means 1,234,000)."
-                "If you see 百萬, it means the value is in millions (e.g., 1234 means 1,234,000,000).",
+    "ALWAYS RUN THIS BEFORE `query_sql_mssql` to get the schema for stTseStkPrcD.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -148,7 +148,7 @@ tool_schemas: List[Dict[str, Any]] = [
     },
     {
     "name": "list_stocks_by_industry",
-    "description": "Return all stocks (id, listCode, nameAbbrV2) that belong to a given industry_id using stock.dbo.stScuSecuBasC.",
+    "description": "Return all stocks id that belong to a given industry_id using stock.dbo.stScuSecuBasC.",
     "parameters": {
         "type": "object",
         "properties": {
